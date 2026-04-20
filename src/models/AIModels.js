@@ -3,11 +3,14 @@ const crypto = require('crypto');
 const WebSocket = require('ws');
 const { getSystemPrompt, MODES } = require('../prompts/SystemPrompt');
 
+const DEFAULT_COPILOT_IDLE_TIMEOUT_MS = 20000;
+const DEFAULT_MODEL_TIMEOUT_MS = 60000;
+
 class AIModel {
     constructor() {
         this.modelName = 'base';
         this.maxRetries = 3;
-        this.timeout = 60000;
+        this.timeout = DEFAULT_MODEL_TIMEOUT_MS;
     }
 
     async chat(messages, options = {}) {
@@ -158,7 +161,7 @@ class GeminiModel extends AIModel {
 }
 
 class CopilotModel extends AIModel {
-    constructor() {
+    constructor(options = {}) {
         super();
         this.modelName = 'Copilot';
         this.conversationId = null;
@@ -167,6 +170,9 @@ class CopilotModel extends AIModel {
             'creative': 'creative',
             'precise': 'precise'
         };
+        this.idleTimeout = Number.isFinite(options.idleTimeout)
+            ? options.idleTimeout
+            : DEFAULT_COPILOT_IDLE_TIMEOUT_MS;
     }
 
     async createConversation() {
@@ -210,7 +216,13 @@ class CopilotModel extends AIModel {
             let settled = false;
             let timeout = null;
             let idleTimeout = null;
-            const idleLimit = Math.min(20000, this.timeout);
+            const configuredIdleTimeout = Number.isFinite(this.idleTimeout)
+                ? this.idleTimeout
+                : DEFAULT_COPILOT_IDLE_TIMEOUT_MS;
+            const configuredTimeout = Number.isFinite(this.timeout)
+                ? this.timeout
+                : DEFAULT_MODEL_TIMEOUT_MS;
+            const idleLimit = Math.min(configuredIdleTimeout, configuredTimeout);
 
             const cleanup = () => {
                 if (timeout) clearTimeout(timeout);
@@ -226,7 +238,9 @@ class CopilotModel extends AIModel {
                 cleanup();
                 try {
                     ws.close();
-                } catch (_) {}
+                } catch (_) {
+                    // Ignore close race errors: socket may already be closed.
+                }
                 resolve(result);
             };
 
@@ -322,7 +336,9 @@ class CopilotModel extends AIModel {
                     } else {
                         handleEvent(parsed);
                     }
-                } catch (e) {}
+                } catch (e) {
+                    // Ignore malformed websocket frames from upstream providers.
+                }
             });
 
             ws.on('error', (error) => {

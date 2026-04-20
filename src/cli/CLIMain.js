@@ -10,6 +10,8 @@ const MemoryManager = require('../core/MemoryManager');
 const { GeminiModel, CopilotModel, ZAIModel, RandomModel } = require('../models/AIModels');
 const { getSystemPrompt, MODES } = require('../prompts/SystemPrompt');
 
+const PROGRESS_CLEAR_WIDTH = Math.max(80, process.stdout.columns || 120);
+
 class CLIMain {
     constructor() {
         this.rl = null;
@@ -110,10 +112,20 @@ class CLIMain {
         if (this.progressInterval) {
             clearInterval(this.progressInterval);
             this.progressInterval = null;
-            process.stdout.write('\r' + ' '.repeat(100) + '\r');
+            process.stdout.write('\r' + ' '.repeat(PROGRESS_CLEAR_WIDTH) + '\r');
         }
         if (finalMessage) {
             console.log(finalMessage);
+        }
+    }
+
+    createAbortController() {
+        return new AbortController();
+    }
+
+    validateModelResponse(response) {
+        if (!response?.success || !response?.content || !response.content.trim()) {
+            throw new Error(response?.error || 'Gagal mendapatkan respons');
         }
     }
 
@@ -251,7 +263,7 @@ class CLIMain {
 │  • clear  - Hapus semua memory percakapan                         │
 │  • stats  - Lihat statistik memory                                │
 │  • sandbox - Lihat status sandbox aktif                           │
-│  • stop   - Batalkan request yang sedang diproses                 │
+│  • stop  - Batalkan request yang sedang diproses                  │
 └────────────────────────────────────────────────────────────────────┘
         `));
         
@@ -348,9 +360,7 @@ class CLIMain {
 
     async processUserMessage(message) {
         this.isProcessing = true;
-        this.activeAbortController = typeof AbortController !== 'undefined'
-            ? new AbortController()
-            : null;
+        this.activeAbortController = this.createAbortController();
         
         try {
             this.memoryManager.add('user', message);
@@ -387,21 +397,15 @@ class CLIMain {
                     
                     let fullResponse = '';
                     response = await this.currentModel.streamChat(messages, async (chunk) => {
-                        if (!this.isProcessing) return;
+                        if (this.activeAbortController?.signal?.aborted) return;
                         process.stdout.write(chunk);
                         fullResponse += chunk;
                     }, {
                         signal: this.activeAbortController?.signal
                     });
                     
-                    if (!response.success) {
-                        throw new Error(response.error || 'Gagal mendapatkan respons');
-                    }
-                    
                     response.content = fullResponse;
-                    if (!response.content || !response.content.trim()) {
-                        throw new Error('Respons model kosong');
-                    }
+                    this.validateModelResponse(response);
                     console.log('\n');
                     
                 } else {
@@ -411,9 +415,7 @@ class CLIMain {
                         signal: this.activeAbortController?.signal
                     });
                     
-                    if (!response.success || !response.content || !response.content.trim()) {
-                        throw new Error(response.error || 'Gagal mendapatkan respons');
-                    }
+                    this.validateModelResponse(response);
                     
                     await this.typingAnimation(response.content, this.typingSpeed);
                     console.log('');
