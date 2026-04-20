@@ -54,6 +54,7 @@ Perintah Fungsi
 exit Keluar dari aplikasi
 model Ganti model AI
 mode Ganti mode AI
+stop / batal Batalkan request yang sedang diproses
 cdn Upload file ke CDN
 memory Lihat ringkasan memory
 clear Hapus memory percakapan

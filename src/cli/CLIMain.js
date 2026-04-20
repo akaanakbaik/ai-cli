@@ -35,6 +35,9 @@ class CLIMain {
             warning: '#ffff44'
         };
         this.isProcessing = false;
+        this.progressInterval = null;
+        this.progressStartTime = 0;
+        this.activeAbortController = null;
     }
 
     async init() {
@@ -90,6 +93,28 @@ class CLIMain {
                 resolve();
             }, duration);
         });
+    }
+
+    startProgress(message) {
+        this.stopProgress();
+        let i = 0;
+        this.progressStartTime = Date.now();
+        this.progressInterval = setInterval(() => {
+            const elapsed = ((Date.now() - this.progressStartTime) / 1000).toFixed(1);
+            process.stdout.write(`\r${this.loadingFrames[i]} ${message} (${elapsed}s)`);
+            i = (i + 1) % this.loadingFrames.length;
+        }, 100);
+    }
+
+    stopProgress(finalMessage = '') {
+        if (this.progressInterval) {
+            clearInterval(this.progressInterval);
+            this.progressInterval = null;
+            process.stdout.write('\r' + ' '.repeat(100) + '\r');
+        }
+        if (finalMessage) {
+            console.log(finalMessage);
+        }
     }
 
     async showMenu() {
@@ -226,6 +251,7 @@ class CLIMain {
 │  • clear  - Hapus semua memory percakapan                         │
 │  • stats  - Lihat statistik memory                                │
 │  • sandbox - Lihat status sandbox aktif                           │
+│  • stop   - Batalkan request yang sedang diproses                 │
 └────────────────────────────────────────────────────────────────────┘
         `));
         
@@ -233,13 +259,22 @@ class CLIMain {
     }
 
     async handleInput(input) {
+        const command = input.trim().toLowerCase();
+
         if (this.isProcessing) {
+            if (command === 'stop' || command === 'batal') {
+                if (this.activeAbortController) {
+                    this.activeAbortController.abort();
+                }
+                this.stopProgress(chalk.hex(this.colors.warning)('\n⛔ Request dibatalkan.\n'));
+                this.isProcessing = false;
+                this.rl.prompt();
+                return;
+            }
             console.log(chalk.hex(this.colors.warning)('\n⏳ Sedang memproses, tunggu sebentar...\n'));
             this.rl.prompt();
             return;
         }
-
-        const command = input.trim().toLowerCase();
         
         if (command === 'exit') {
             this.rl.close();
@@ -286,6 +321,12 @@ class CLIMain {
             this.rl.prompt();
             return;
         }
+
+        if (command === 'stop' || command === 'batal') {
+            console.log(chalk.hex(this.colors.info)('\nℹ️ Tidak ada request yang sedang diproses.\n'));
+            this.rl.prompt();
+            return;
+        }
         
         if (command === 'setuju' || command === 'gas') {
             if (this.pendingSandboxRequest) {
@@ -307,6 +348,9 @@ class CLIMain {
 
     async processUserMessage(message) {
         this.isProcessing = true;
+        this.activeAbortController = typeof AbortController !== 'undefined'
+            ? new AbortController()
+            : null;
         
         try {
             this.memoryManager.add('user', message);
@@ -332,18 +376,22 @@ class CLIMain {
             
             messages.push({ role: 'user', content: message });
             
-            await this.loadingAnimation(`Memproses dengan ${this.currentModelType}`, 1000);
+            this.startProgress(`Memproses dengan ${this.currentModelType}`);
             
             let response;
             
             try {
                 if (this.currentModel.streamChat) {
+                    this.stopProgress(chalk.hex(this.colors.success)(`✓ Memproses dengan ${this.currentModelType} ✓`));
                     console.log(chalk.hex(this.colors.primary)('\n┌─[Megaverse]\n├─➤ '));
                     
                     let fullResponse = '';
                     response = await this.currentModel.streamChat(messages, async (chunk) => {
+                        if (!this.isProcessing) return;
                         process.stdout.write(chunk);
                         fullResponse += chunk;
+                    }, {
+                        signal: this.activeAbortController?.signal
                     });
                     
                     if (!response.success) {
@@ -351,19 +399,38 @@ class CLIMain {
                     }
                     
                     response.content = fullResponse;
+                    if (!response.content || !response.content.trim()) {
+                        throw new Error('Respons model kosong');
+                    }
                     console.log('\n');
                     
                 } else {
+                    this.stopProgress(chalk.hex(this.colors.success)(`✓ Memproses dengan ${this.currentModelType} ✓`));
                     console.log(chalk.hex(this.colors.primary)('\n┌─[Megaverse]\n├─➤ '));
-                    response = await this.currentModel.chat(messages);
+                    response = await this.currentModel.chat(messages, {
+                        signal: this.activeAbortController?.signal
+                    });
                     
-                    if (!response.success) {
+                    if (!response.success || !response.content || !response.content.trim()) {
                         throw new Error(response.error || 'Gagal mendapatkan respons');
                     }
                     
                     await this.typingAnimation(response.content, this.typingSpeed);
                     console.log('');
                 }
+            } catch (primaryError) {
+                const fallbackResult = await this.tryFallbackResponse(messages, primaryError);
+                if (fallbackResult) {
+                    response = fallbackResult;
+                    console.log(chalk.hex(this.colors.primary)('\n┌─[Megaverse]\n├─➤ '));
+                    await this.typingAnimation(response.content, this.typingSpeed);
+                    console.log('');
+                } else {
+                    throw primaryError;
+                }
+            }
+            
+            try {
                 
                 const mediaDetected = this.cdnManager.extractMediaFromText(response.content);
                 if (mediaDetected.length > 0) {
@@ -414,6 +481,7 @@ class CLIMain {
                 });
                 
             } catch (error) {
+                this.stopProgress();
                 console.log(chalk.hex(this.colors.error)(`\n❌ ERROR DETAIL: ${error.message}`));
                 if (error.stack) {
                     console.log(chalk.hex(this.colors.error)(`\n📋 STACK TRACE:\n${error.stack}`));
@@ -424,8 +492,34 @@ class CLIMain {
             console.log(chalk.hex(this.colors.info)('\n└' + '─'.repeat(70) + '\n'));
             
         } finally {
+            this.stopProgress();
+            this.activeAbortController = null;
             this.isProcessing = false;
         }
+    }
+
+    async tryFallbackResponse(messages, primaryError) {
+        this.stopProgress();
+        if (this.currentModelType === 'Gemini') {
+            return null;
+        }
+
+        console.log(chalk.hex(this.colors.warning)(`\n⚠️ ${this.currentModelType} gagal: ${primaryError.message}`));
+        console.log(chalk.hex(this.colors.info)('↪ Mencoba fallback ke Gemini agar hasil tetap muncul...'));
+        
+        this.startProgress('Memproses fallback Gemini');
+        const fallbackModel = new GeminiModel();
+        const fallbackResponse = await fallbackModel.chat(messages, {
+            signal: this.activeAbortController?.signal
+        });
+        this.stopProgress(chalk.hex(this.colors.success)('✓ Fallback Gemini selesai ✓'));
+
+        if (!fallbackResponse.success || !fallbackResponse.content || !fallbackResponse.content.trim()) {
+            return null;
+        }
+
+        fallbackResponse.content = `[Fallback aktif karena ${this.currentModelType} bermasalah]\n\n${fallbackResponse.content}`;
+        return fallbackResponse;
     }
 
     async executeSandboxRequest(request) {

@@ -207,14 +207,93 @@ class CopilotModel extends AIModel {
             });
 
             let response = '';
-            let timeout = setTimeout(() => {
-                ws.close();
-                resolve({
+            let settled = false;
+            let timeout = null;
+            let idleTimeout = null;
+            const idleLimit = Math.min(20000, this.timeout);
+
+            const cleanup = () => {
+                if (timeout) clearTimeout(timeout);
+                if (idleTimeout) clearTimeout(idleTimeout);
+                if (options.signal) {
+                    options.signal.removeEventListener('abort', onAbort);
+                }
+            };
+
+            const finish = (result) => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                try {
+                    ws.close();
+                } catch (_) {}
+                resolve(result);
+            };
+
+            const resetIdleTimeout = () => {
+                if (idleTimeout) clearTimeout(idleTimeout);
+                idleTimeout = setTimeout(() => {
+                    finish({
+                        success: false,
+                        error: 'Timeout menunggu respons Copilot',
+                        model: this.modelName
+                    });
+                }, idleLimit);
+            };
+
+            const onAbort = () => {
+                finish({
+                    success: false,
+                    error: 'Request dibatalkan pengguna',
+                    model: this.modelName
+                });
+            };
+
+            timeout = setTimeout(() => {
+                finish({
                     success: false,
                     error: 'Timeout',
                     model: this.modelName
                 });
             }, this.timeout);
+
+            resetIdleTimeout();
+
+            if (options.signal) {
+                if (options.signal.aborted) {
+                    onAbort();
+                    return;
+                }
+                options.signal.addEventListener('abort', onAbort, { once: true });
+            }
+
+            const handleEvent = (parsed) => {
+                const event = parsed?.event || parsed?.type;
+                if (event === 'appendText') {
+                    response += parsed.text || '';
+                } else if (event === 'done' || event === 'complete' || event === 'final') {
+                    if (!response.trim()) {
+                        finish({
+                            success: false,
+                            error: 'Respons kosong dari Copilot',
+                            model: this.modelName
+                        });
+                        return;
+                    }
+                    finish({
+                        success: true,
+                        content: response,
+                        model: this.modelName,
+                        conversationId: this.conversationId
+                    });
+                } else if (event === 'error') {
+                    finish({
+                        success: false,
+                        error: parsed.message || 'Copilot mengembalikan error',
+                        model: this.modelName
+                    });
+                }
+            };
 
             ws.on('open', () => {
                 ws.send(JSON.stringify({
@@ -233,38 +312,44 @@ class CopilotModel extends AIModel {
             });
 
             ws.on('message', (chunk) => {
+                resetIdleTimeout();
                 try {
                     const parsed = JSON.parse(chunk.toString());
-                    if (parsed.event === 'appendText') {
-                        response += parsed.text || '';
-                    } else if (parsed.event === 'done') {
-                        clearTimeout(timeout);
-                        ws.close();
-                        resolve({
-                            success: true,
-                            content: response,
-                            model: this.modelName,
-                            conversationId: this.conversationId
-                        });
-                    } else if (parsed.event === 'error') {
-                        clearTimeout(timeout);
-                        ws.close();
-                        resolve({
-                            success: false,
-                            error: parsed.message,
-                            model: this.modelName
-                        });
+                    if (Array.isArray(parsed)) {
+                        for (const item of parsed) {
+                            handleEvent(item);
+                        }
+                    } else {
+                        handleEvent(parsed);
                     }
                 } catch (e) {}
             });
 
             ws.on('error', (error) => {
-                clearTimeout(timeout);
-                resolve({
+                finish({
                     success: false,
                     error: error.message,
                     model: this.modelName
                 });
+            });
+
+            ws.on('close', () => {
+                if (!settled) {
+                    if (response.trim()) {
+                        finish({
+                            success: true,
+                            content: response,
+                            model: this.modelName,
+                            conversationId: this.conversationId
+                        });
+                    } else {
+                        finish({
+                            success: false,
+                            error: 'Koneksi Copilot ditutup tanpa respons',
+                            model: this.modelName
+                        });
+                    }
+                }
             });
         });
     }
