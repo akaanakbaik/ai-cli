@@ -1,0 +1,43 @@
+{
+  "name": "ai-cli-megaverse",
+  "version": "1.0.0",
+  "description": "CLI Chat AI Ultimate dengan Sandbox, CDN Auto Upload, Memory Panjang, Zero Filter",
+  "main": "index.js",
+  "bin": {
+    "megaverse": "./index.js",
+    "ai-cli": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js",
+    "install-global": "npm install -g ."
+  },
+  "keywords": [
+    "cli",
+    "ai",
+    "chatbot",
+    "gemini",
+    "copilot",
+    "zai",
+    "sandbox",
+    "cdn",
+    "memory",
+    "terminal"
+  ],
+  "author": "Megaverse",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.0",
+    "chalk": "^4.1.2",
+    "form-data": "^4.0.0",
+    "uuid": "^9.0.0",
+    "ws": "^8.14.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/akaanakbaik/ai-cli"
+  }
+}
