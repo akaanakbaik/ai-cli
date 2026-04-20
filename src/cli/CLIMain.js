@@ -7,7 +7,8 @@ const crypto = require('crypto');
 const SandboxManager = require('../core/SandboxManager');
 const CDNManager = require('../core/CDNManager');
 const MemoryManager = require('../core/MemoryManager');
-const { GeminiModel, CopilotModel, ZAIModel, RandomModel, SYSTEM_PROMPT_DEWA } = require('../models/AIModels');
+const { GeminiModel, CopilotModel, ZAIModel, RandomModel } = require('../models/AIModels');
+const { getSystemPrompt, MODES } = require('../prompts/SystemPrompt');
 
 class CLIMain {
     constructor() {
@@ -21,6 +22,8 @@ class CLIMain {
         this.sessionActive = true;
         this.pendingSandboxRequest = null;
         this.typingSpeed = 25;
+        this.currentMode = 'normal';
+        this.availableModes = MODES;
         this.loadingFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
         this.colors = {
             primary: '#00ff88',
@@ -36,8 +39,7 @@ class CLIMain {
         console.log(chalk.hex(this.colors.primary)(`
 ╔══════════════════════════════════════════════════════════════╗
 ║     🤖 MEGAVERSE CLI - AI CHAT ULTIMATE                     ║
-║     Versi: 1.0.0 | Mode: DEWA | Filter: MATI TOTAL         ║
-║     Motto: Gak punya batasan. Gaskeun selamanya.           ║
+║     Versi: 2.0.0 | Multi Mode System Prompt                ║
 ╚══════════════════════════════════════════════════════════════╝
         `));
 
@@ -49,7 +51,7 @@ class CLIMain {
 
         this.rl.on('line', this.handleInput.bind(this));
         this.rl.on('close', () => {
-            console.log(chalk.hex(this.colors.info)('\n👋 Sampai jumpa! Megaverse selalu siap dipanggil.\n'));
+            console.log(chalk.hex(this.colors.info)('\n👋 Sampai jumpa!\n'));
             process.exit(0);
         });
 
@@ -136,23 +138,60 @@ class CLIMain {
         }
     }
 
+    async showModeMenu() {
+        console.log(chalk.hex(this.colors.accent)(`
+╔════════════════════════════════════════════════╗
+║              PILIH MODE AI                     ║
+╠════════════════════════════════════════════════╣
+        `));
+        
+        for (const mode of this.availableModes) {
+            console.log(chalk.hex(this.colors.primary)(`  ${mode.id}. ${mode.name} - ${mode.description}`));
+        }
+        
+        console.log(chalk.hex(this.colors.accent)(`
+╚════════════════════════════════════════════════╝
+        `));
+        
+        this.rl.question(chalk.hex(this.colors.info)('Pilih mode (1/2/3/4/5): '), async (choice) => {
+            const selected = this.availableModes.find(m => m.id === choice);
+            if (selected) {
+                this.currentMode = selected.value;
+                if (this.currentModel && this.currentModel.setMode) {
+                    this.currentModel.setMode(this.currentMode);
+                }
+                console.log(chalk.hex(this.colors.success)(`\n✅ Mode ${selected.name} aktif!\n`));
+            } else {
+                console.log(chalk.hex(this.colors.error)('\n❌ Mode tidak valid, menggunakan mode Normal.\n'));
+                this.currentMode = 'normal';
+            }
+            
+            if (this.currentModel) {
+                await this.startChat();
+            } else {
+                await this.showMenu();
+            }
+        });
+    }
+
     async initModel(model, modelName) {
         this.currentModel = model;
         this.currentModelType = modelName;
         this.isRandomMode = false;
         this.memoryManager = new MemoryManager();
         
+        if (this.currentModel.setMode) {
+            this.currentModel.setMode(this.currentMode);
+        }
+        
+        const currentModeName = this.availableModes.find(m => m.value === this.currentMode)?.name || 'Normal';
+        
         console.log(chalk.hex(this.colors.success)(`
 ✅ Model ${modelName} aktif!
-💡 Fitur yang tersedia:
-   • Sandbox (eksekusi kode otomatis)
-   • CDN upload otomatis untuk media
-   • Memory panjang dengan ringkasan AI
-   • Typing smooth animation
-   • Zero filter, zero batasan
+✅ Mode ${currentModeName} aktif!
         `));
         
-        await this.startChat();
+        await this.showModeMenu();
     }
 
     async initRandomModel() {
@@ -163,27 +202,38 @@ class CLIMain {
         this.isRandomMode = true;
         this.memoryManager = new MemoryManager();
         
+        if (this.currentModel.setMode) {
+            this.currentModel.setMode(this.currentMode);
+        }
+        
+        const currentModeName = this.availableModes.find(m => m.value === this.currentMode)?.name || 'Normal';
+        
         console.log(chalk.hex(this.colors.secondary)(`
 🎲 MODE RANDOM AKTIF!
 🤖 Model terpilih: ${selectedModelName}
+✅ Mode ${currentModeName} aktif!
 💡 Model akan TETAP dalam 1 sesi chat ini.
-💡 Ganti model? Ketik "model" kapan saja.
         `));
         
-        await this.startChat();
+        await this.showModeMenu();
     }
 
     async startChat() {
+        const currentModeName = this.availableModes.find(m => m.value === this.currentMode)?.name || 'Normal';
+        
         console.log(chalk.hex(this.colors.info)(`
 ┌─────────────────────────────────────────────────────────────┐
-│  Perintah yang tersedia:                                    │
-│  • "exit"   - Keluar dari program                          │
+│  Model: ${this.currentModelType}  |  Mode: ${currentModeName}                      │
+├─────────────────────────────────────────────────────────────┤
+│  Perintah:                                                  │
+│  • "exit"   - Keluar                                       │
 │  • "model"  - Ganti model AI                               │
+│  • "mode"   - Ganti mode AI                                │
 │  • "cdn"    - Upload file ke CDN                           │
 │  • "memory" - Lihat ringkasan memory                       │
-│  • "clear"  - Hapus memory percakapan                      │
-│  • "stats"  - Lihat statistik memory                       │
-│  • "sandbox" - Lihat status sandbox aktif                  │
+│  • "clear"  - Hapus memory                                 │
+│  • "stats"  - Statistik memory                             │
+│  • "sandbox" - Status sandbox                              │
 └─────────────────────────────────────────────────────────────┘
         `));
         
@@ -200,6 +250,11 @@ class CLIMain {
         
         if (command === 'model') {
             await this.showMenu();
+            return;
+        }
+        
+        if (command === 'mode') {
+            await this.showModeMenu();
             return;
         }
         
@@ -257,10 +312,13 @@ class CLIMain {
         
         const context = this.memoryManager.getContext(3000);
         const importantInfo = this.memoryManager.getImportantInfo();
+        const currentModeName = this.availableModes.find(m => m.value === this.currentMode)?.name || 'Normal';
+        const systemPrompt = getSystemPrompt(this.currentMode);
         
         const messages = [
-            { role: 'system', content: SYSTEM_PROMPT_DEWA },
-            { role: 'system', content: `Konteks percakapan sebelumnya: ${context}` }
+            { role: 'system', content: systemPrompt },
+            { role: 'system', content: `Konteks percakapan sebelumnya: ${context}` },
+            { role: 'system', content: `Mode saat ini: ${currentModeName}. Sesuaikan gaya respons dengan mode ini.` }
         ];
         
         if (importantInfo.userInfo.name) {
@@ -319,12 +377,13 @@ class CLIMain {
             }
         }
         
-        if (response.content.includes('[SANDBOX REQUEST]') || 
-            response.content.toLowerCase().includes('butuh sandbox') ||
-            response.content.toLowerCase().includes('minta izin sandbox')) {
+        if (response.content.includes('sandbox') || 
+            response.content.toLowerCase().includes('butuh menjalankan kode') ||
+            response.content.toLowerCase().includes('perlu menjalankan kode')) {
             
-            const sandboxMatch = response.content.match(/\[SANDBOX REQUEST\]([^\[]+)/i) ||
-                                response.content.match(/butuh sandbox buat:?([^\.!]+)/i);
+            const sandboxMatch = response.content.match(/sandbox untuk:?([^\.!]+)/i) ||
+                                response.content.match(/butuh menjalankan kode untuk:?([^\.!]+)/i) ||
+                                response.content.match(/perlu menjalankan kode untuk:?([^\.!]+)/i);
             
             if (sandboxMatch) {
                 this.pendingSandboxRequest = {
@@ -368,7 +427,7 @@ class CLIMain {
 ┌─────────────────────────────────────────────────────────────┐
 │  ✅ TASK SANDBOX SELESAI                                    │
 ├─────────────────────────────────────────────────────────────┤
-│  Instruksi: ${taskResult.instruction.substring(0, 50)}...                    │
+│  Instruksi: ${request.instruction.substring(0, 50)}...                    │
 │  Durasi: ${taskResult.duration}ms                           │
 │  Steps: ${taskResult.steps.length}                                          │
 └─────────────────────────────────────────────────────────────┘
@@ -512,7 +571,7 @@ class CLIMain {
   Files: ${info.fileCount}
   Commands: ${info.commandCount}
   Processes: ${info.processes.length}
-            `));
+                `));
             }
         }
         
